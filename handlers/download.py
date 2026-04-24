@@ -4,7 +4,7 @@ from aiogram import Router
 from aiogram.types import CallbackQuery, BufferedInputFile
 from aiogram.fsm.context import FSMContext
 
-from config import load_config, FOOTER
+from config import load_config, FOOTER, t
 from keyboards import download_kb
 from states.auth import AuthStates
 from utils.client_manager import _clients, get_user_data
@@ -12,12 +12,21 @@ from utils.session_export import export_session_string, export_session_file, exp
 from utils.tdata_export import build_tdata_zip
 
 logger = logging.getLogger(__name__)
-router = Router()
-config = load_config()
+router  = Router()
+config  = load_config()
 
 
-def _footer_caption(title: str, extra: str = "") -> str:
-    return f"<b>{title}</b>{extra}{FOOTER}"
+def _lang(user_id: int) -> str:
+    return get_user_data(user_id, "lang", "ru")
+
+
+def _phone(user_id: int) -> str:
+    return get_user_data(user_id, "phone", "session")
+
+
+def _safe(phone: str) -> str:
+    """'+79991234567' → '79991234567'"""
+    return phone.replace("+", "").replace(" ", "")
 
 
 async def _get_client(user_id: int):
@@ -27,108 +36,102 @@ async def _get_client(user_id: int):
     return client
 
 
-# ──────────────────────────── .session file ─────────────────────────────────
+# ─── .session file ───────────────────────────────────────────────────────────
 
 @router.callback_query(AuthStates.authenticated, lambda c: c.data == "dl_session")
 async def cb_dl_session(callback: CallbackQuery, state: FSMContext) -> None:
-    await callback.answer("⏳ Building .session file…")
+    lang = _lang(callback.from_user.id)
+    await callback.answer()
     client = await _get_client(callback.from_user.id)
     if not client:
-        await callback.message.answer("⚠️ Session expired. Please /start again.")
+        await callback.message.answer(t(lang, "expired") + FOOTER, parse_mode="HTML")
         return
 
+    msg = await callback.message.answer(t(lang, "building") + FOOTER, parse_mode="HTML")
     try:
-        buf = await export_session_file(client)
-        phone = get_user_data(callback.from_user.id, "phone", "session")
-        safe_phone = phone.replace("+", "").replace(" ", "_")
-        filename = f"{safe_phone}.session"
-
+        buf      = await export_session_file(client)
+        filename = f"{_safe(_phone(callback.from_user.id))}.session"
+        await msg.delete()
         await callback.message.answer_document(
             BufferedInputFile(buf.read(), filename=filename),
-            caption=_footer_caption(
-                "📄 Telethon <code>.session</code> file",
-                "\n\nImport with: <code>TelegramClient('name', api_id, api_hash)</code>",
-            ),
+            caption=t(lang, "session_caption") + FOOTER,
             parse_mode="HTML",
         )
     except Exception as exc:
-        logger.exception("export_session_file error: %s", exc)
-        await callback.message.answer(f"❌ Error generating .session: <code>{exc}</code>",
-                                      parse_mode="HTML")
+        logger.exception("export_session_file: %s", exc)
+        await msg.edit_text(f"❌ <code>{exc}</code>" + FOOTER, parse_mode="HTML")
 
 
-# ──────────────────────────── session string ────────────────────────────────
+# ─── session string ──────────────────────────────────────────────────────────
 
 @router.callback_query(AuthStates.authenticated, lambda c: c.data == "dl_session_str")
 async def cb_dl_session_str(callback: CallbackQuery, state: FSMContext) -> None:
-    await callback.answer("⏳ Fetching session string…")
+    lang = _lang(callback.from_user.id)
+    await callback.answer()
     client = await _get_client(callback.from_user.id)
     if not client:
-        await callback.message.answer("⚠️ Session expired. Please /start again.")
+        await callback.message.answer(t(lang, "expired") + FOOTER, parse_mode="HTML")
         return
 
+    msg = await callback.message.answer(t(lang, "building") + FOOTER, parse_mode="HTML")
     try:
         session_str = await export_session_string(client)
-        # Send as a file so it isn't truncated in the chat bubble
-        content = f"# Telethon StringSession\n{session_str}\n"
+        filename    = f"{_safe(_phone(callback.from_user.id))}_session.txt"
+        content     = f"# Telethon StringSession\n{session_str}\n"
+        await msg.delete()
         await callback.message.answer_document(
-            BufferedInputFile(content.encode(), filename="session_string.txt"),
-            caption=_footer_caption(
-                "🔑 Telethon StringSession",
-                "\n\nUse with: <code>TelegramClient(StringSession('…'), …)</code>",
-            ),
+            BufferedInputFile(content.encode(), filename=filename),
+            caption=t(lang, "str_caption") + FOOTER,
             parse_mode="HTML",
         )
     except Exception as exc:
-        logger.exception("export_session_string error: %s", exc)
-        await callback.message.answer(f"❌ Error: <code>{exc}</code>", parse_mode="HTML")
+        logger.exception("export_session_string: %s", exc)
+        await msg.edit_text(f"❌ <code>{exc}</code>" + FOOTER, parse_mode="HTML")
 
 
-# ──────────────────────────── tdata ZIP ─────────────────────────────────────
+# ─── tdata ZIP ───────────────────────────────────────────────────────────────
 
 @router.callback_query(AuthStates.authenticated, lambda c: c.data == "dl_tdata")
 async def cb_dl_tdata(callback: CallbackQuery, state: FSMContext) -> None:
-    await callback.answer("⏳ Building tdata archive…")
+    lang  = _lang(callback.from_user.id)
+    phone = _phone(callback.from_user.id)
+    await callback.answer()
     client = await _get_client(callback.from_user.id)
     if not client:
-        await callback.message.answer("⚠️ Session expired. Please /start again.")
+        await callback.message.answer(t(lang, "expired") + FOOTER, parse_mode="HTML")
         return
 
+    msg = await callback.message.answer(t(lang, "building") + FOOTER, parse_mode="HTML")
     try:
         session_str = await export_session_string(client)
-        buf = build_tdata_zip(session_str)
-
+        buf         = build_tdata_zip(session_str, phone=phone)
+        filename    = f"{_safe(phone)}_tdata.zip"
+        await msg.delete()
         await callback.message.answer_document(
-            BufferedInputFile(buf.read(), filename="tdata.zip"),
-            caption=_footer_caption(
-                "🗂 Telegram Desktop <code>tdata</code> archive",
-                (
-                    "\n\n<b>How to use:</b>\n"
-                    "1. Extract the ZIP — you'll get a <code>tdata/</code> folder.\n"
-                    "2. Place it next to your <code>Telegram.exe</code> / app binary.\n"
-                    "3. Launch Telegram Desktop — it will pick up the session automatically."
-                ),
-            ),
+            BufferedInputFile(buf.read(), filename=filename),
+            caption=t(lang, "tdata_caption") + t(lang, "tdata_howto") + FOOTER,
             parse_mode="HTML",
         )
     except Exception as exc:
-        logger.exception("build_tdata_zip error: %s", exc)
-        await callback.message.answer(f"❌ Error building tdata: <code>{exc}</code>",
-                                      parse_mode="HTML")
+        logger.exception("build_tdata_zip: %s", exc)
+        await msg.edit_text(f"❌ <code>{exc}</code>" + FOOTER, parse_mode="HTML")
 
 
-# ──────────────────────────── JSON metadata ─────────────────────────────────
+# ─── JSON ────────────────────────────────────────────────────────────────────
 
 @router.callback_query(AuthStates.authenticated, lambda c: c.data == "dl_json")
 async def cb_dl_json(callback: CallbackQuery, state: FSMContext) -> None:
-    await callback.answer("⏳ Building JSON metadata…")
+    lang  = _lang(callback.from_user.id)
+    phone = _phone(callback.from_user.id)
+    await callback.answer()
     client = await _get_client(callback.from_user.id)
     if not client:
-        await callback.message.answer("⚠️ Session expired. Please /start again.")
+        await callback.message.answer(t(lang, "expired") + FOOTER, parse_mode="HTML")
         return
 
+    msg = await callback.message.answer(t(lang, "building") + FOOTER, parse_mode="HTML")
     try:
-        buf = await export_json(
+        buf      = await export_json(
             client,
             api_id=config.api_id,
             api_hash=config.api_hash,
@@ -136,14 +139,13 @@ async def cb_dl_json(callback: CallbackQuery, state: FSMContext) -> None:
             system_version=config.system_version,
             app_version=config.app_version,
         )
+        filename = f"{_safe(phone)}_session.json"
+        await msg.delete()
         await callback.message.answer_document(
-            BufferedInputFile(buf.read(), filename="session.json"),
-            caption=_footer_caption(
-                "📋 Session metadata JSON",
-                "\n\nContains: API credentials, DC info, account details, session string.",
-            ),
+            BufferedInputFile(buf.read(), filename=filename),
+            caption=t(lang, "json_caption") + FOOTER,
             parse_mode="HTML",
         )
     except Exception as exc:
-        logger.exception("export_json error: %s", exc)
-        await callback.message.answer(f"❌ Error: <code>{exc}</code>", parse_mode="HTML")
+        logger.exception("export_json: %s", exc)
+        await msg.edit_text(f"❌ <code>{exc}</code>" + FOOTER, parse_mode="HTML")
